@@ -1,0 +1,55 @@
+# CMake build directories
+cmake-build-debug/
+cmake-build-release/
+cmake-build-*/
+build/
+out/
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.cmake
+CTestTestfile.cmake
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*.user
+*.xcodeproj/
+*.xcworkspace/
+
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.lib
+*.exe
+*.out
+*.app
+
+# Executable
+SIMIA
+
+# OS files
+.DS_Store
+Thumbs.db
+.gitkeep
+
+# Runtime generated files
+imgui.ini
+*.log
+
+# Dependencies (if not tracked)
+# _deps/  # Uncomment if you don't want fetched dependencies tracked
+
+# Temporary/backup files
+*~
+*.bak
+*.tmp
+.swp
+

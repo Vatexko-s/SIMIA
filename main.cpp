@@ -199,6 +199,7 @@ const AnimationClip* ChooseClip(const AnimationClip& idle, const AnimationClip& 
 int main() {
     SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_WINDOW_RESIZABLE);
     InitWindow(kScreenWidth, kScreenHeight, "SIMIA - Isometric Adventure Template");
+    SetExitKey(KEY_NULL);  // Avoid accidental Escape-based app exit.
     SetTargetFPS(144);
 
     rlImGuiSetup(true);
@@ -236,6 +237,9 @@ int main() {
     bool faceLeft = false;
 
     while (!WindowShouldClose()) {
+        const bool cmdQ = (IsKeyDown(KEY_LEFT_SUPER) || IsKeyDown(KEY_RIGHT_SUPER)) && IsKeyPressed(KEY_Q);
+        if (cmdQ) break;
+
         const float dt = GetFrameTime();
 
         Vector3 inputDir = {};
@@ -291,7 +295,7 @@ int main() {
         else stamina = Clamp(stamina + dt * 0.2f, 0.0f, 1.0f);
 
         if (Vector3Length(moveWorld) > 0.01f) {
-            faceLeft = Vector3DotProduct(moveWorld, camRight) < 0.0f;
+            faceLeft = Vector3DotProduct(moveWorld, camRight) > 0.0f;
         }
 
         const float cp = std::cos(pitch);

@@ -1,4 +1,9 @@
 cmake_minimum_required(VERSION 3.20)
+
+# Allow fetched dependencies with older cmake_minimum_required() floors to
+# configure under newer CMake versions (e.g. CMake 4.x).
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+
 project(SIMIA)
 
 set(CMAKE_CXX_STANDARD 20)
