@@ -28,6 +28,9 @@ endif()
 
 add_executable(SIMIA
         main.cpp
+        src/AnimationSystem.cpp
+        src/CivilizationSystem.cpp
+        src/WorldSystem.cpp
         imgui/imgui.cpp
         imgui/imgui_draw.cpp
         imgui/imgui_tables.cpp
@@ -37,6 +40,7 @@ add_executable(SIMIA
 
 target_include_directories(SIMIA
         PRIVATE
+        src
         dependencies
         dependencies/include
         dependencies/include/extras

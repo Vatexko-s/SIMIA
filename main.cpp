@@ -1,6 +1,5 @@
 #include <algorithm>
 #include <cmath>
-#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -9,197 +8,38 @@
 #include "raymath.h"
 #include "rlImGui.h"
 
+#include "src/AnimationSystem.h"
+#include "src/CivilizationSystem.h"
+#include "src/WorldSystem.h"
+
 namespace {
 
 constexpr int kScreenWidth = 1440;
 constexpr int kScreenHeight = 900;
-constexpr int kHalfTiles = 16;
+constexpr int kHalfTiles = 35;
 constexpr float kTileSize = 1.2f;
 constexpr float kTerrainBaseY = -0.55f;
-
-struct WorldProp {
-    Vector3 position;
-    float scale;
-    bool tree;
-};
+constexpr int kInitialPopulation = 300;
 
 struct GameTuning {
     float moveSpeed = 6.0f;
     float sprintMultiplier = 1.75f;
     float acceleration = 14.0f;
-    float cameraDistance = 22.0f;
-    float cameraPitch = 36.0f;
-    float cameraYaw = 45.0f;
+    static constexpr float cameraDistance = 37.0f;
+    static constexpr float cameraPitch = 30.0f;
+    static constexpr float cameraYaw = 45.0f;
     float spriteHeight = 2.15f;
     float spriteFootOffset = 0.03f;
     bool drawGrid = false;
     bool drawStats = true;
 };
 
-struct AnimationClip {
-    std::vector<Texture2D> frames;
-    float fps = 8.0f;
-    std::string name;
-};
-
-enum class MoveState {
-    Idle,
-    Walk,
-    Run
-};
-
-float TerrainHeight(float x, float z) {
-    const float waves = std::sin(x * 0.22f) * 0.45f + std::cos(z * 0.19f) * 0.35f;
-    const float details = std::sin((x + z) * 0.32f) * 0.22f + std::cos((x - z) * 0.27f) * 0.14f;
-    return kTerrainBaseY + waves + details;
-}
-
-Color LerpColor(Color a, Color b, float t) {
-    t = Clamp(t, 0.0f, 1.0f);
-    return Color{
-        static_cast<unsigned char>(a.r + (b.r - a.r) * t),
-        static_cast<unsigned char>(a.g + (b.g - a.g) * t),
-        static_cast<unsigned char>(a.b + (b.b - a.b) * t),
-        255
-    };
-}
-
-void DrawWorldTile(float x, float z, float size) {
-    const float h = TerrainHeight(x, z);
-    const float waterLevel = -0.38f;
-    const float pathBlend = std::exp(-std::fabs(x - z * 0.25f) * 0.19f);
-
-    const Color grassLow = Color{93, 150, 72, 255};
-    const Color grassHigh = Color{126, 183, 98, 255};
-    const Color dirt = Color{131, 108, 82, 255};
-    const Color water = Color{62, 128, 170, 255};
-
-    const float heightTint = Clamp((h + 1.0f) / 1.5f, 0.0f, 1.0f);
-    Color top = LerpColor(grassLow, grassHigh, heightTint);
-    top = LerpColor(top, dirt, pathBlend * 0.55f);
-    if (h <= waterLevel) top = LerpColor(water, top, 0.15f);
-
-    const float thickness = h - kTerrainBaseY + 0.35f;
-    const Vector3 tilePos = {x, kTerrainBaseY + thickness * 0.5f, z};
-    DrawCubeV(tilePos, {size, thickness, size}, top);
-    DrawCubeWiresV(tilePos, {size, thickness, size}, Fade(BLACK, 0.12f));
-
-    if (h <= waterLevel + 0.03f) {
-        DrawCubeV({x, waterLevel + 0.02f, z}, {size * 0.94f, 0.04f, size * 0.94f}, Fade(Color{95, 182, 220, 255}, 0.85f));
-    }
-}
-
-std::vector<WorldProp> BuildProps() {
-    std::vector<WorldProp> props;
-    props.reserve(70);
-
-    SetRandomSeed(1337);
-    for (int i = 0; i < 70; ++i) {
-        const float x = static_cast<float>(GetRandomValue(-kHalfTiles + 1, kHalfTiles - 1)) * kTileSize +
-                        static_cast<float>(GetRandomValue(-35, 35)) * 0.01f;
-        const float z = static_cast<float>(GetRandomValue(-kHalfTiles + 1, kHalfTiles - 1)) * kTileSize +
-                        static_cast<float>(GetRandomValue(-35, 35)) * 0.01f;
-
-        if (std::fabs(x - z * 0.25f) < 2.0f) continue;
-        if (TerrainHeight(x, z) < -0.25f) continue;
-
-        const bool tree = GetRandomValue(0, 100) > 35;
-        const float scale = tree ? static_cast<float>(GetRandomValue(85, 135)) * 0.01f
-                                 : static_cast<float>(GetRandomValue(55, 110)) * 0.01f;
-        props.push_back({{x, TerrainHeight(x, z), z}, scale, tree});
-    }
-
-    return props;
-}
-
-void DrawProp(const WorldProp& prop) {
-    if (prop.tree) {
-        const float trunkHeight = 1.2f * prop.scale;
-        const float trunkRadius = 0.15f * prop.scale;
-        DrawCylinder({prop.position.x, prop.position.y + trunkHeight * 0.5f, prop.position.z}, trunkRadius, trunkRadius, trunkHeight, 8,
-                     Color{114, 82, 56, 255});
-        DrawSphere({prop.position.x, prop.position.y + trunkHeight + 0.55f * prop.scale, prop.position.z}, 0.75f * prop.scale,
-                   Color{63, 125, 70, 255});
-        DrawSphere({prop.position.x - 0.25f * prop.scale, prop.position.y + trunkHeight + 0.4f * prop.scale, prop.position.z + 0.2f * prop.scale},
-                   0.55f * prop.scale, Color{77, 145, 80, 255});
-    } else {
-        DrawSphere({prop.position.x, prop.position.y + 0.28f * prop.scale, prop.position.z}, 0.35f * prop.scale, Color{118, 120, 126, 255});
-    }
-}
-
-std::vector<std::filesystem::path> CollectPngFrames(const std::filesystem::path& dir) {
-    std::vector<std::filesystem::path> files;
-    if (!std::filesystem::exists(dir) || !std::filesystem::is_directory(dir)) return files;
-
-    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
-        if (!entry.is_regular_file()) continue;
-        if (entry.path().extension() == ".png" || entry.path().extension() == ".PNG") {
-            files.push_back(entry.path());
-        }
-    }
-
-    std::sort(files.begin(), files.end());
-    return files;
-}
-
-std::filesystem::path ResolveExistingPath(const std::vector<std::string>& relativeCandidates) {
-    for (const std::string& rel : relativeCandidates) {
-        const std::filesystem::path p0 = std::filesystem::path(rel);
-        const std::filesystem::path p1 = std::filesystem::path("..") / rel;
-        const std::filesystem::path p2 = std::filesystem::path("..") / ".." / rel;
-        if (std::filesystem::exists(p0)) return p0;
-        if (std::filesystem::exists(p1)) return p1;
-        if (std::filesystem::exists(p2)) return p2;
-    }
-
-    return {};
-}
-
-AnimationClip LoadClip(const std::vector<std::string>& candidateDirs, float fps, const char* name) {
-    AnimationClip clip;
-    clip.fps = fps;
-    clip.name = name;
-
-    const std::filesystem::path directory = ResolveExistingPath(candidateDirs);
-    if (directory.empty()) return clip;
-
-    const std::vector<std::filesystem::path> framePaths = CollectPngFrames(directory);
-    for (const auto& framePath : framePaths) {
-        Texture2D frame = LoadTexture(framePath.string().c_str());
-        if (frame.id != 0) clip.frames.push_back(frame);
-    }
-
-    return clip;
-}
-
-void UnloadClip(AnimationClip& clip) {
-    for (Texture2D& frame : clip.frames) {
-        if (frame.id != 0) UnloadTexture(frame);
-    }
-    clip.frames.clear();
-}
-
-const AnimationClip* ChooseClip(const AnimationClip& idle, const AnimationClip& walk, const AnimationClip& run, MoveState state) {
-    switch (state) {
-        case MoveState::Run:
-            if (!run.frames.empty()) return &run;
-            if (!walk.frames.empty()) return &walk;
-            return &idle;
-        case MoveState::Walk:
-            if (!walk.frames.empty()) return &walk;
-            return &idle;
-        case MoveState::Idle:
-        default:
-            return &idle;
-    }
-}
-
 }  // namespace
 
 int main() {
     SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_WINDOW_RESIZABLE);
-    InitWindow(kScreenWidth, kScreenHeight, "SIMIA - Isometric Adventure Template");
-    SetExitKey(KEY_NULL);  // Avoid accidental Escape-based app exit.
+    InitWindow(kScreenWidth, kScreenHeight, "SIMIA - Civilization Simulator");
+    SetExitKey(KEY_NULL);
     SetTargetFPS(144);
 
     rlImGuiSetup(true);
@@ -223,9 +63,12 @@ int main() {
         "Run");
 
     GameTuning tuning;
-    std::vector<WorldProp> props = BuildProps();
+    std::vector<WorldProp> props = BuildProps(kHalfTiles, kTileSize, kTerrainBaseY);
 
-    Vector3 playerPosition = {0.0f, TerrainHeight(0.0f, 0.0f) + 0.75f, 0.0f};
+    CivilizationSystem civilization(kTerrainBaseY, kHalfTiles, kTileSize);
+    civilization.InitializePopulation(kInitialPopulation, idleClip, walkClip, runClip);
+
+    Vector3 playerPosition = {0.0f, TerrainHeight(0.0f, 0.0f, kTerrainBaseY) + 0.75f, 0.0f};
     Vector3 velocity = {};
     float playerYaw = 0.0f;
     float stamina = 1.0f;
@@ -236,11 +79,19 @@ int main() {
     int animFrameIndex = 0;
     bool faceLeft = false;
 
+    int hoveredAgentId = -1;
+    int selectedAgentId = -1;
+    Rectangle hoveredNpcRect = {};
+    bool simulationPaused = false;
+
     while (!WindowShouldClose()) {
         const bool cmdQ = (IsKeyDown(KEY_LEFT_SUPER) || IsKeyDown(KEY_RIGHT_SUPER)) && IsKeyPressed(KEY_Q);
         if (cmdQ) break;
 
         const float dt = GetFrameTime();
+        if (!simulationPaused) {
+            civilization.Update(dt, idleClip, walkClip, runClip);
+        }
 
         Vector3 inputDir = {};
         if (IsKeyDown(KEY_W)) inputDir.z += 1.0f;
@@ -249,10 +100,9 @@ int main() {
         if (IsKeyDown(KEY_D)) inputDir.x += 1.0f;
         if (Vector3Length(inputDir) > 0.0f) inputDir = Vector3Normalize(inputDir);
 
-        const float yaw = DEG2RAD * tuning.cameraYaw;
-        const float pitch = DEG2RAD * tuning.cameraPitch;
+        const float yaw = DEG2RAD * GameTuning::cameraYaw;
+        const float pitch = DEG2RAD * GameTuning::cameraPitch;
 
-        // Inverted movement fix: use camera-forward direction from camera to target (not the opposite).
         Vector3 camForward = {-std::cos(yaw), 0.0f, -std::sin(yaw)};
         Vector3 camRight = {-camForward.z, 0.0f, camForward.x};
 
@@ -271,7 +121,7 @@ int main() {
         playerPosition.x = Clamp(playerPosition.x, -worldRadius, worldRadius);
         playerPosition.z = Clamp(playerPosition.z, -worldRadius, worldRadius);
 
-        const float groundHeight = TerrainHeight(playerPosition.x, playerPosition.z);
+        const float groundHeight = TerrainHeight(playerPosition.x, playerPosition.z, kTerrainBaseY);
         playerPosition.y = groundHeight + 0.74f;
 
         const float planarSpeed = Vector2Length({velocity.x, velocity.z});
@@ -282,7 +132,6 @@ int main() {
         else moveState = MoveState::Idle;
 
         activeClip = ChooseClip(idleClip, walkClip, runClip, moveState);
-
         if (activeClip != nullptr && !activeClip->frames.empty()) {
             animTime += dt * activeClip->fps;
             const int frameCount = static_cast<int>(activeClip->frames.size());
@@ -301,9 +150,9 @@ int main() {
         const float cp = std::cos(pitch);
         const float sp = std::sin(pitch);
         const Vector3 cameraOffset = {
-            cp * std::cos(yaw) * tuning.cameraDistance,
-            sp * tuning.cameraDistance,
-            cp * std::sin(yaw) * tuning.cameraDistance
+            cp * std::cos(yaw) * GameTuning::cameraDistance,
+            sp * GameTuning::cameraDistance,
+            cp * std::sin(yaw) * GameTuning::cameraDistance
         };
 
         const Vector3 cameraTarget = {playerPosition.x, playerPosition.y + 0.6f, playerPosition.z};
@@ -317,7 +166,7 @@ int main() {
 
         for (int x = -kHalfTiles; x <= kHalfTiles; ++x) {
             for (int z = -kHalfTiles; z <= kHalfTiles; ++z) {
-                DrawWorldTile(static_cast<float>(x) * kTileSize, static_cast<float>(z) * kTileSize, kTileSize);
+                DrawWorldTile(static_cast<float>(x) * kTileSize, static_cast<float>(z) * kTileSize, kTileSize, kTerrainBaseY);
             }
         }
 
@@ -351,12 +200,92 @@ int main() {
             DrawSphere(headPos, 0.22f, Color{244, 228, 167, 255});
         }
 
+        hoveredAgentId = -1;
+        float hoveredNpcDepth = 1e30f;
+        const Vector2 mousePos = GetMousePosition();
+
+        const std::vector<Agent>& agents = civilization.Agents();
+        for (const Agent& agent : agents) {
+            if (!agent.alive || agent.activeClip == nullptr || agent.activeClip->frames.empty()) continue;
+
+            const float npcGroundHeight = TerrainHeight(agent.position.x, agent.position.z, kTerrainBaseY);
+            const Texture2D& frame = agent.activeClip->frames[agent.animFrameIndex];
+            Rectangle source = {0.0f, 0.0f, static_cast<float>(frame.width), static_cast<float>(frame.height)};
+
+            Rectangle sourceCopy = source;
+            if (agent.faceLeft) {
+                sourceCopy.x = static_cast<float>(frame.width);
+                sourceCopy.width = -static_cast<float>(frame.width);
+            }
+
+            const float spriteHeight = 1.7f;
+            const float spriteWidth = spriteHeight * (static_cast<float>(frame.width) / static_cast<float>(frame.height));
+            const Vector3 spritePos = {agent.position.x, npcGroundHeight + spriteHeight * 0.5f - 0.07f, agent.position.z};
+            DrawBillboardRec(camera, frame, sourceCopy, spritePos, {spriteWidth, spriteHeight}, Fade(WHITE, 0.85f));
+
+            const Vector3 topWorld = {spritePos.x, spritePos.y + spriteHeight * 0.5f, spritePos.z};
+            const Vector3 bottomWorld = {spritePos.x, spritePos.y - spriteHeight * 0.5f, spritePos.z};
+            const Vector2 topScreen = GetWorldToScreen(topWorld, camera);
+            const Vector2 bottomScreen = GetWorldToScreen(bottomWorld, camera);
+            const Vector2 centerScreen = GetWorldToScreen(spritePos, camera);
+            const float pixelHeight = std::fabs(bottomScreen.y - topScreen.y);
+            const float pixelWidth = pixelHeight * (static_cast<float>(frame.width) / static_cast<float>(frame.height));
+            Rectangle screenRect = {
+                centerScreen.x - pixelWidth * 0.5f,
+                centerScreen.y - pixelHeight * 0.5f,
+                pixelWidth,
+                pixelHeight
+            };
+
+            if (CheckCollisionPointRec(mousePos, screenRect)) {
+                const float dx = camera.position.x - agent.position.x;
+                const float dy = camera.position.y - agent.position.y;
+                const float dz = camera.position.z - agent.position.z;
+                const float depth = dx * dx + dy * dy + dz * dz;
+                if (depth < hoveredNpcDepth) {
+                    hoveredNpcDepth = depth;
+                    hoveredAgentId = agent.id;
+                    hoveredNpcRect = screenRect;
+                }
+            }
+        }
+
         if (tuning.drawGrid) DrawGrid(kHalfTiles * 2, 1.0f);
 
         EndMode3D();
 
+        if (hoveredAgentId >= 0) {
+            DrawRectangleLinesEx(hoveredNpcRect, 2.0f, WHITE);
+        }
+
         rlImGuiBegin();
         {
+            if (!ImGui::GetIO().WantCaptureMouse && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                selectedAgentId = hoveredAgentId;
+            }
+
+            const CivilizationStats& simStats = civilization.Stats();
+            const float yearsFloat = simStats.simTimeYears;
+            const int yearNumber = static_cast<int>(yearsFloat) + 1;
+            const float yearProgress = yearsFloat - std::floor(yearsFloat);
+
+            ImGui::SetNextWindowPos(ImVec2(10, static_cast<float>(GetScreenHeight() - 94)), ImGuiCond_Always);
+            ImGui::SetNextWindowSize(ImVec2(static_cast<float>(GetScreenWidth() - 20), 84), ImGuiCond_Always);
+            ImGui::Begin("Timeline");
+            ImGui::Text("Year: %d | Population: %d | Max Gen: %d", yearNumber, simStats.living, simStats.maxGeneration);
+            ImGui::ProgressBar(yearProgress, ImVec2(-1.0f, 0.0f), "Year progress");
+
+            if (simulationPaused) {
+                if (ImGui::Button("Resume")) simulationPaused = false;
+                ImGui::SameLine();
+                if (ImGui::Button("Step +0.1s")) {
+                    civilization.Update(0.1f, idleClip, walkClip, runClip);
+                }
+            } else {
+                if (ImGui::Button("Pause")) simulationPaused = true;
+            }
+            ImGui::End();
+
             ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_Always);
             ImGui::SetNextWindowSize(ImVec2(390, 0), ImGuiCond_Always);
             ImGui::Begin("Adventure Slice");
@@ -368,7 +297,7 @@ int main() {
             if (idleClip.frames.empty() || walkClip.frames.empty() || runClip.frames.empty()) {
                 ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Some animation frames are missing.");
             }
-            if (ImGui::Button("Rebuild Props")) props = BuildProps();
+            if (ImGui::Button("Rebuild Props")) props = BuildProps(kHalfTiles, kTileSize, kTerrainBaseY);
             ImGui::Checkbox("Show Grid", &tuning.drawGrid);
             ImGui::Checkbox("Show Stats", &tuning.drawStats);
             ImGui::End();
@@ -379,22 +308,65 @@ int main() {
             ImGui::SliderFloat("Move Speed", &tuning.moveSpeed, 2.0f, 12.0f, "%.1f");
             ImGui::SliderFloat("Sprint Mult", &tuning.sprintMultiplier, 1.1f, 2.5f, "%.2f");
             ImGui::SliderFloat("Acceleration", &tuning.acceleration, 4.0f, 24.0f, "%.1f");
-            ImGui::SliderFloat("Camera Dist", &tuning.cameraDistance, 12.0f, 32.0f, "%.1f");
-            ImGui::SliderFloat("Camera Pitch", &tuning.cameraPitch, 24.0f, 60.0f, "%.1f");
-            ImGui::SliderFloat("Camera Yaw", &tuning.cameraYaw, 30.0f, 60.0f, "%.1f");
             ImGui::SliderFloat("Sprite Height", &tuning.spriteHeight, 1.4f, 3.2f, "%.2f");
             ImGui::SliderFloat("Foot Offset", &tuning.spriteFootOffset, -0.3f, 0.3f, "%.2f");
             ImGui::End();
 
             if (tuning.drawStats) {
-                ImGui::SetNextWindowPos(ImVec2(static_cast<float>(GetScreenWidth() - 300), 20), ImGuiCond_Always);
-                ImGui::SetNextWindowSize(ImVec2(280, 0), ImGuiCond_Always);
+                ImGui::SetNextWindowPos(ImVec2(static_cast<float>(GetScreenWidth() - 320), 20), ImGuiCond_Always);
+                ImGui::SetNextWindowSize(ImVec2(300, 0), ImGuiCond_Always);
                 ImGui::Begin("Runtime");
                 ImGui::Text("FPS: %d", GetFPS());
                 ImGui::Text("Player XZ: %.2f / %.2f", playerPosition.x, playerPosition.z);
                 ImGui::Text("Elevation: %.2f", groundHeight);
-                ImGui::Text("Props: %d", static_cast<int>(props.size()));
+                ImGui::Text("Population: %d", simStats.living);
+                ImGui::Text("Born / Dead: %d / %d", simStats.totalBorn, simStats.totalDead);
+                ImGui::Text("Year B/D: %d / %d", simStats.birthsThisEpoch, simStats.deathsThisEpoch);
+                ImGui::Text("Last Year B/D: %d / %d", simStats.lastEpochBirths, simStats.lastEpochDeaths);
+                ImGui::Text("Max Gen: %d", simStats.maxGeneration);
+                ImGui::Text("Year(Epoch): %d | Tick: %d", simStats.epoch + 1, simStats.tick);
+                ImGui::Text("State: %s", simulationPaused ? "Paused" : "Running");
+                ImGui::Text("Fertile F/M: %d / %d", simStats.fertileFemales, simStats.fertileMales);
+                ImGui::Text("Repro checks/success: %d / %d", simStats.reproductionChecks, simStats.reproductionSuccesses);
+                ImGui::Text("Pressure: %.2f", simStats.populationPressure);
+                ImGui::Text("Sim Years: %.1f", simStats.simTimeYears);
                 ImGui::ProgressBar(stamina, ImVec2(-1.0f, 0.0f), sprint ? "Stamina (draining)" : "Stamina");
+                ImGui::End();
+            }
+
+            const Agent* selectedAgent = nullptr;
+            for (const Agent& agent : civilization.Agents()) {
+                if (agent.id == selectedAgentId) {
+                    selectedAgent = &agent;
+                    break;
+                }
+            }
+            if (selectedAgent == nullptr) selectedAgentId = -1;
+
+            if (selectedAgent != nullptr) {
+                ImGui::SetNextWindowPos(ImVec2(static_cast<float>(GetScreenWidth() - 320), 290), ImGuiCond_Always);
+                ImGui::SetNextWindowSize(ImVec2(300, 0), ImGuiCond_Always);
+                ImGui::Begin("NPC Stats");
+                ImGui::Text("ID: %d", selectedAgent->id);
+                ImGui::Text("Generation: %d", selectedAgent->generation);
+                ImGui::Text("Sex: %s", selectedAgent->sex == Sex::Female ? "Female" : "Male");
+                ImGui::Text("State: %s", MoveStateLabel(selectedAgent->moveState));
+                ImGui::Text("Age: %.1f / %.1f years", selectedAgent->age, selectedAgent->maxAge);
+                ImGui::Text("Energy: %.2f", selectedAgent->energy);
+                ImGui::Text("Cooldown: %.2f", selectedAgent->fertilityCooldown);
+                ImGui::Separator();
+                ImGui::Text("Genome Move: %.2f", selectedAgent->genome.moveSpeed);
+                ImGui::Text("Genome Metab: %.2f", selectedAgent->genome.metabolism);
+                ImGui::Text("Genome Fert: %.2f", selectedAgent->genome.fertility);
+                ImGui::Text("Genome Long: %.2f", selectedAgent->genome.longevity);
+                ImGui::Separator();
+                ImGui::Text("Position: %.2f / %.2f / %.2f", selectedAgent->position.x, selectedAgent->position.y, selectedAgent->position.z);
+                ImGui::Text("Velocity: %.2f / %.2f / %.2f", selectedAgent->velocity.x, selectedAgent->velocity.y, selectedAgent->velocity.z);
+                ImGui::Text("Clip: %s", selectedAgent->activeClip ? selectedAgent->activeClip->name.c_str() : "None");
+                ImGui::Text("Frame: %d", selectedAgent->animFrameIndex);
+                if (ImGui::Button("Close NPC Stats")) {
+                    selectedAgentId = -1;
+                }
                 ImGui::End();
             }
         }

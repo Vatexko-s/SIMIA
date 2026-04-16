@@ -93,14 +93,19 @@ World bounds clamped to `±(kHalfTiles * kTileSize - 0.8f)`.
 
 ### 5. Camera System
 
-**Orbital with smooth damping:**
+**Fixed orbital camera (v2.1+)**:
 ```cpp
 camera.target = Vector3Lerp(camera.target, cameraTarget, dt * 8.0f);
 camera.position = Vector3Lerp(camera.position, offsetFromTarget, dt * 8.0f);
 ```
 
+Camera angles are **locked at compile-time constants**:
+- `cameraPitch = 30.0f` (degrees)
+- `cameraDistance = 37.0f` (units)
+- `cameraYaw = 45.0f` (degrees)
+
 Camera target is offset 0.6 units above player. Offset vector computed from spherical coordinates
-using tuning parameters: `cameraDistance`, `cameraPitch`, `cameraYaw`.
+using fixed tuning parameters. No runtime adjustment available (removed from UI in v2.1).
 
 ---
 
@@ -133,19 +138,58 @@ Modify `BuildProps()` (line 92–113):
 - Conditional placement via terrain height and path-proximity checks
 - Easy to add new shape types: add struct field, branch in `DrawProp()`
 
+### Configure NPC Behavior
+
+1. Adjust `kNPCCount` for number of NPCs (default 10)
+2. Modify movement speed in `UpdateNPC()` – change `Vector3Scale(moveDir, 3.0f)` to adjust NPC walking speed
+3. Tweak animation selection: edit thresholds in `ChooseClip()` or NPC movement logic
+4. Change spawn area by modifying `SpawnNPCs()` bounds (currently ±kHalfTiles ±3)
+5. Adjust `directionChangeInterval` range (currently 2.0–5.0 seconds per NPC)
+
+---
+
+## NPC System (v2.0+)
+
+**NPC Structure** contains:
+- `position`, `velocity` – Current movement vectors
+- `yaw` – Facing direction in radians
+- `moveTimer`, `directionChangeInterval` – Time-based behavior scheduling
+- `moveState` – Current animation state (Idle/Walk/Run)
+- Animation: `activeClip`, `animTime`, `animFrameIndex`, `faceLeft`
+
+**NPC Update Cycle** (called every frame for each NPC):
+1. Increment `moveTimer`
+2. Every `directionChangeInterval` seconds: randomly choose new direction or stay idle (30% idle, 70% walk)
+3. Compute velocity based on movement state (3.0 units/sec when walking)
+4. Apply velocity to position and clamp to world bounds
+5. Pin Y position to terrain height
+6. Update animation state and advance animation frame
+7. Update facing direction based on velocity
+
+**NPC Spawning**: `SpawnNPCs(kNPCCount)` creates NPCs with:
+- Random position within safe bounds (avoid water, center path)
+- Randomized `directionChangeInterval` (2.0–5.0 seconds)
+- Seed 42 (different from terrain/props) for reproducible NPC placement
+
+**NPC Rendering**: Each NPC drawn as billboard sprite with **alpha transparency (0.85f)**:
+- Sprite height: 1.7f (smaller than player's 2.15f)
+- Vertical offset: -0.07f for proper grounding
+- **Alpha blending via `Fade(WHITE, 0.85f)`** ensures visibility even when camera passes behind
+- Prevents billboard occlusion (classic raylib billboard issue where sprites disappear behind camera)
+
 ---
 
 ## Key Constants & Conventions
 
 **Naming:**
-- `k*` prefix for compile-time constants (e.g., `kScreenWidth`, `kTileSize`)
+- `k*` prefix for compile-time constants (e.g., `kScreenWidth`, `kTileSize`, `kNPCCount`)
 - camelCase for local variables and parameters
 - MoveState uses PascalCase (enum class values)
 
 **Coordinates:**
 - X, Z are horizontal; Y is vertical (raylib convention)
 - `TerrainBaseY = -0.55f` is the "sea level" baseline
-- World extends ±16 tiles (at 1.2 units per tile ≈ ±19.2 units)
+- World extends ±35 tiles (5x larger than v1.0; at 1.2 units per tile ≈ ±42 units)
 
 **Timing:**
 - Locked to 144 FPS target but delta-time aware (`dt = GetFrameTime()`)
