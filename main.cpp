@@ -46,6 +46,7 @@ const char* BehaviorLabel(Behavior b) {
         case Behavior::Drink: return "Drinking";
         case Behavior::SeekMate: return "Seek Mate";
         case Behavior::Rest: return "Resting";
+        case Behavior::Migrate: return "Migrating";
     }
     return "?";
 }
@@ -76,6 +77,42 @@ void DrawGeneBar(const char* label, float value, float minVal, float maxVal, ImU
     dl->AddRectFilled(a, fillEnd, color, 4.0f);
     dl->AddRect(a, b, IM_COL32(255, 255, 255, 80), 4.0f);
     ImGui::Dummy(ImVec2(width, height + 4.0f));
+}
+
+void DrawAncestryPie(float diameter, const float ancestry[4], const std::vector<Nationality>& nationalities) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const float regionW = ImGui::GetContentRegionAvail().x;
+    const float radius = diameter * 0.5f;
+    const ImVec2 center = ImVec2(origin.x + regionW * 0.5f, origin.y + radius + 4.0f);
+
+    float total = 0.0f;
+    for (int i = 0; i < 4; ++i) total += std::max(0.0f, ancestry[i]);
+    if (total <= 0.0001f) {
+        dl->AddCircle(center, radius, IM_COL32(160, 160, 170, 200), 32, 1.5f);
+        ImGui::Dummy(ImVec2(regionW, diameter + 14.0f));
+        return;
+    }
+
+    float angleStart = -PI * 0.5f;
+    for (int i = 0; i < 4; ++i) {
+        const float frac = std::max(0.0f, ancestry[i]) / total;
+        if (frac < 0.001f) continue;
+        const float angleEnd = angleStart + frac * 2.0f * PI;
+        Color natC = (i < static_cast<int>(nationalities.size()))
+                         ? nationalities[static_cast<size_t>(i)].color
+                         : Color{180, 180, 180, 255};
+        const ImU32 col = IM_COL32(natC.r, natC.g, natC.b, 235);
+        dl->PathLineTo(center);
+        dl->PathArcTo(center, radius, angleStart, angleEnd, 28);
+        dl->PathFillConvex(col);
+        angleStart = angleEnd;
+    }
+
+    dl->AddCircle(center, radius, IM_COL32(255, 255, 255, 130), 48, 1.5f);
+    dl->AddCircleFilled(center, radius * 0.18f, IM_COL32(20, 24, 32, 220));
+
+    ImGui::Dummy(ImVec2(regionW, diameter + 14.0f));
 }
 
 void DrawDnaHelix(float regionWidth, float regionHeight, const Genome& g) {
@@ -168,11 +205,15 @@ int main() {
 
     GameTuning tuning;
     unsigned int worldSeed = static_cast<unsigned int>(GetTime() * 1000.0) ^ 0xDEADBEEFu;
+    SetTerrainSeed(worldSeed);
     std::vector<WorldProp> props = BuildProps(kHalfTiles, kTileSize, kTerrainBaseY, worldSeed);
     std::vector<FoodNode> foodNodes = BuildFoodNodes(kHalfTiles, kTileSize, kTerrainBaseY, worldSeed);
+    std::vector<Nationality> nationalities = BuildNationalities(kHalfTiles, kTileSize, kTerrainBaseY, worldSeed);
 
     CivilizationSystem civilization(kTerrainBaseY, kHalfTiles, kTileSize);
+    civilization.SetNationalities(nationalities);
     civilization.InitializePopulation(kInitialPopulation, idleClip, walkClip, runClip);
+    civilization.SetNationalities(nationalities);
 
     RenderTexture2D dnaTexture = LoadRenderTexture(360, 420);
     SetTextureFilter(dnaTexture.texture, TEXTURE_FILTER_BILINEAR);
@@ -194,10 +235,11 @@ int main() {
     bool showDnaWindow = false;
     float simSpeed = 1.0f;
 
-    constexpr float kRenderRadius = 55.0f;
+    constexpr float kRenderRadius = 38.0f;
     constexpr float kRenderRadiusSq = kRenderRadius * kRenderRadius;
-    constexpr float kAgentRenderRadius = 60.0f;
+    constexpr float kAgentRenderRadius = 42.0f;
     constexpr float kAgentRenderRadiusSq = kAgentRenderRadius * kAgentRenderRadius;
+    constexpr float kBehindCameraSlack = 4.0f;
 
     while (!WindowShouldClose()) {
         const bool cmdQ = (IsKeyDown(KEY_LEFT_SUPER) || IsKeyDown(KEY_RIGHT_SUPER)) && IsKeyPressed(KEY_Q);
@@ -297,6 +339,20 @@ int main() {
 
         BeginMode3D(camera);
 
+        const float camFwdX_raw = camera.target.x - camera.position.x;
+        const float camFwdZ_raw = camera.target.z - camera.position.z;
+        const float camFwdLen = std::sqrt(camFwdX_raw * camFwdX_raw + camFwdZ_raw * camFwdZ_raw);
+        const float camFwdX = (camFwdLen > 0.0001f) ? camFwdX_raw / camFwdLen : 1.0f;
+        const float camFwdZ = (camFwdLen > 0.0001f) ? camFwdZ_raw / camFwdLen : 0.0f;
+        const float camPosX = camera.position.x;
+        const float camPosZ = camera.position.z;
+
+        auto inFront = [&](float wx, float wz) {
+            const float dx = wx - camPosX;
+            const float dz = wz - camPosZ;
+            return (dx * camFwdX + dz * camFwdZ) > -kBehindCameraSlack;
+        };
+
         const int tileRadius = static_cast<int>(kRenderRadius / kTileSize) + 1;
         const int playerTileX = static_cast<int>(std::round(playerPosition.x / kTileSize));
         const int playerTileZ = static_cast<int>(std::round(playerPosition.z / kTileSize));
@@ -311,7 +367,10 @@ int main() {
                 const float wz = static_cast<float>(z) * kTileSize;
                 const float dz = wz - playerPosition.z;
                 if (dx * dx + dz * dz > kRenderRadiusSq) continue;
-                DrawWorldTile(wx, wz, kTileSize, kTerrainBaseY);
+                if (!inFront(wx, wz)) continue;
+                const int nid = NationalityIdAt(wx, wz, nationalities, kTerrainBaseY);
+                const Color tint = (nid >= 0) ? nationalities[static_cast<size_t>(nid)].color : Color{0, 0, 0, 0};
+                DrawWorldTile(wx, wz, kTileSize, kTerrainBaseY, tint);
             }
         }
 
@@ -319,12 +378,14 @@ int main() {
             const float dx = prop.position.x - playerPosition.x;
             const float dz = prop.position.z - playerPosition.z;
             if (dx * dx + dz * dz > kRenderRadiusSq) continue;
+            if (!inFront(prop.position.x, prop.position.z)) continue;
             DrawProp(prop);
         }
         for (const FoodNode& node : foodNodes) {
             const float dx = node.position.x - playerPosition.x;
             const float dz = node.position.z - playerPosition.z;
             if (dx * dx + dz * dz > kRenderRadiusSq) continue;
+            if (!inFront(node.position.x, node.position.z)) continue;
             DrawFoodNode(node);
         }
 
@@ -371,6 +432,7 @@ int main() {
             const float adz = agent.position.z - playerPosition.z;
             const bool isHighlighted = (agent.id == nearestAgentId || agent.id == selectedAgentId);
             if (!isHighlighted && adx * adx + adz * adz > kAgentRenderRadiusSq) continue;
+            if (!isHighlighted && !inFront(agent.position.x, agent.position.z)) continue;
 
             const float npcGroundHeight = TerrainHeight(agent.position.x, agent.position.z, kTerrainBaseY);
             const Texture2D& frame = agent.activeClip->frames[agent.animFrameIndex];
@@ -384,9 +446,31 @@ int main() {
             const float spriteHeight = 1.7f;
             const float spriteWidth = spriteHeight * (static_cast<float>(frame.width) / static_cast<float>(frame.height));
             const Vector3 spritePos = {agent.position.x, npcGroundHeight + spriteHeight * 0.5f - 0.07f, agent.position.z};
+            Color baseTint = WHITE;
+            if (!nationalities.empty()) {
+                float sumA = 0.0f;
+                for (int i = 0; i < 4; ++i) sumA += std::max(0.0f, agent.ancestry[i]);
+                if (sumA > 0.001f) {
+                    float mr = 0.0f, mg = 0.0f, mb = 0.0f;
+                    const int nN = std::min(4, static_cast<int>(nationalities.size()));
+                    for (int i = 0; i < nN; ++i) {
+                        const float w = std::max(0.0f, agent.ancestry[i]) / sumA;
+                        mr += nationalities[static_cast<size_t>(i)].color.r * w;
+                        mg += nationalities[static_cast<size_t>(i)].color.g * w;
+                        mb += nationalities[static_cast<size_t>(i)].color.b * w;
+                    }
+                    const Color mixed = {
+                        static_cast<unsigned char>(mr),
+                        static_cast<unsigned char>(mg),
+                        static_cast<unsigned char>(mb),
+                        255
+                    };
+                    baseTint = LerpColor(WHITE, mixed, 0.34f);
+                }
+            }
             const Color tint = (agent.id == selectedAgentId)
                 ? Color{255, 220, 120, 255}
-                : ((agent.id == nearestAgentId) ? Color{200, 240, 255, 255} : WHITE);
+                : ((agent.id == nearestAgentId) ? Color{200, 240, 255, 255} : baseTint);
             DrawBillboardRec(camera, frame, source, spritePos, {spriteWidth, spriteHeight}, Fade(tint, 0.92f));
 
             if (agent.id == nearestAgentId || agent.id == selectedAgentId) {
@@ -464,9 +548,14 @@ int main() {
             ImGui::SameLine();
             if (ImGui::Button("Respawn World")) {
                 worldSeed = static_cast<unsigned int>(GetTime() * 1000.0) ^ 0xDEADBEEFu;
+                SetTerrainSeed(worldSeed);
                 foodNodes = BuildFoodNodes(kHalfTiles, kTileSize, kTerrainBaseY, worldSeed);
                 props = BuildProps(kHalfTiles, kTileSize, kTerrainBaseY, worldSeed);
+                nationalities = BuildNationalities(kHalfTiles, kTileSize, kTerrainBaseY, worldSeed);
+                civilization.SetNationalities(nationalities);
                 civilization.InitializePopulation(kInitialPopulation, idleClip, walkClip, runClip);
+                civilization.SetNationalities(nationalities);
+                playerPosition = {0.0f, TerrainHeight(0.0f, 0.0f, kTerrainBaseY) + 0.75f, 0.0f};
                 selectedAgentId = -1;
             }
             ImGui::End();
@@ -539,6 +628,101 @@ int main() {
                 ImGui::End();
             }
 
+            // Mini-map heatmap.
+            {
+                constexpr int kMapGrid = 32;
+                int counts[kMapGrid * kMapGrid] = {};
+                int natCounts[4][kMapGrid * kMapGrid] = {};
+                const float worldHalf = static_cast<float>(kHalfTiles) * kTileSize;
+                const float worldSpan = worldHalf * 2.0f;
+                const float cellWorld = worldSpan / static_cast<float>(kMapGrid);
+                int maxCount = 1;
+
+                for (const Agent& agent : agents) {
+                    if (!agent.alive) continue;
+                    const int gx = Clamp(static_cast<int>((agent.position.x + worldHalf) / cellWorld), 0, kMapGrid - 1);
+                    const int gz = Clamp(static_cast<int>((agent.position.z + worldHalf) / cellWorld), 0, kMapGrid - 1);
+                    const int idx = gz * kMapGrid + gx;
+                    counts[idx] += 1;
+                    if (counts[idx] > maxCount) maxCount = counts[idx];
+                    if (agent.nationalityId >= 0 && agent.nationalityId < 4) {
+                        natCounts[agent.nationalityId][idx] += 1;
+                    }
+                }
+
+                const float pixel = 6.0f;
+                const float mapPx = pixel * static_cast<float>(kMapGrid);
+                ImGui::SetNextWindowPos(
+                    ImVec2(static_cast<float>(GetScreenWidth()) - mapPx - 32.0f,
+                           static_cast<float>(GetScreenHeight()) - mapPx - 188.0f),
+                    ImGuiCond_Always);
+                ImGui::SetNextWindowSize(ImVec2(mapPx + 24.0f, mapPx + 110.0f), ImGuiCond_Always);
+                ImGui::Begin("Population Heat");
+                ImGui::Text("Living: %d  Max cell: %d", static_cast<int>(simStats.living), maxCount);
+                ImGui::Spacing();
+
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                const ImVec2 origin = ImGui::GetCursorScreenPos();
+
+                dl->AddRectFilled(origin, ImVec2(origin.x + mapPx, origin.y + mapPx), IM_COL32(18, 22, 32, 230));
+
+                for (int gz = 0; gz < kMapGrid; ++gz) {
+                    for (int gx = 0; gx < kMapGrid; ++gx) {
+                        const int idx = gz * kMapGrid + gx;
+                        const int c = counts[idx];
+                        if (c == 0) continue;
+                        int dominant = 0;
+                        int domCount = natCounts[0][idx];
+                        for (int n = 1; n < 4 && n < static_cast<int>(nationalities.size()); ++n) {
+                            if (natCounts[n][idx] > domCount) {
+                                domCount = natCounts[n][idx];
+                                dominant = n;
+                            }
+                        }
+                        Color natC = (dominant < static_cast<int>(nationalities.size()))
+                                         ? nationalities[static_cast<size_t>(dominant)].color
+                                         : Color{200, 200, 200, 255};
+                        const float t = std::min(1.0f, static_cast<float>(c) / 6.0f);
+                        const unsigned int alpha = static_cast<unsigned int>(70.0f + 185.0f * t);
+                        const ImU32 col = IM_COL32(natC.r, natC.g, natC.b, alpha);
+                        const ImVec2 a = ImVec2(origin.x + gx * pixel, origin.y + gz * pixel);
+                        const ImVec2 b = ImVec2(a.x + pixel, a.y + pixel);
+                        dl->AddRectFilled(a, b, col);
+                    }
+                }
+
+                // Nationality seed markers.
+                for (const Nationality& nat : nationalities) {
+                    const float sx = origin.x + ((nat.seed.x + worldHalf) / worldSpan) * mapPx;
+                    const float sz = origin.y + ((nat.seed.z + worldHalf) / worldSpan) * mapPx;
+                    const ImU32 ring = IM_COL32(nat.color.r, nat.color.g, nat.color.b, 255);
+                    dl->AddCircle(ImVec2(sx, sz), 5.0f, ring, 0, 2.0f);
+                }
+
+                // Player marker.
+                const float px = origin.x + ((playerPosition.x + worldHalf) / worldSpan) * mapPx;
+                const float pz = origin.y + ((playerPosition.z + worldHalf) / worldSpan) * mapPx;
+                dl->AddCircleFilled(ImVec2(px, pz), 3.5f, IM_COL32(255, 255, 255, 255));
+                dl->AddCircle(ImVec2(px, pz), 5.0f, IM_COL32(0, 0, 0, 220), 0, 1.5f);
+
+                dl->AddRect(origin, ImVec2(origin.x + mapPx, origin.y + mapPx), IM_COL32(255, 255, 255, 70));
+
+                ImGui::Dummy(ImVec2(mapPx, mapPx + 6.0f));
+
+                // Legend.
+                for (size_t n = 0; n < nationalities.size(); ++n) {
+                    const Nationality& nat = nationalities[n];
+                    const int natPop = static_cast<int>(std::count_if(
+                        agents.begin(), agents.end(),
+                        [n](const Agent& a) { return a.alive && a.nationalityId == static_cast<int>(n); }));
+                    ImGui::TextColored(
+                        ImVec4(nat.color.r / 255.0f, nat.color.g / 255.0f, nat.color.b / 255.0f, 1.0f),
+                        "%s: %d", nat.name.c_str(), natPop);
+                    if ((n & 1) == 0) ImGui::SameLine(120.0f);
+                }
+                ImGui::End();
+            }
+
             const Agent* selectedAgent = (selectedAgentId >= 0) ? civilization.FindAgentById(selectedAgentId) : nullptr;
             if (selectedAgent != nullptr && !selectedAgent->alive) selectedAgent = nullptr;
             if (selectedAgent == nullptr) {
@@ -553,6 +737,27 @@ int main() {
                 ImGui::Text("ID #%d  |  Gen %d  |  %s",
                             selectedAgent->id, selectedAgent->generation,
                             selectedAgent->sex == Sex::Female ? "Female" : "Male");
+                if (selectedAgent->nationalityId >= 0 &&
+                    selectedAgent->nationalityId < static_cast<int>(nationalities.size())) {
+                    const Nationality& nat = nationalities[static_cast<size_t>(selectedAgent->nationalityId)];
+                    ImGui::TextColored(
+                        ImVec4(nat.color.r / 255.0f, nat.color.g / 255.0f, nat.color.b / 255.0f, 1.0f),
+                        "Nation: %s (dominant)", nat.name.c_str());
+                } else {
+                    ImGui::Text("Nation: Stateless");
+                }
+
+                ImGui::TextUnformatted("Heritage:");
+                DrawAncestryPie(110.0f, selectedAgent->ancestry, nationalities);
+                for (int i = 0; i < static_cast<int>(nationalities.size()) && i < 4; ++i) {
+                    const float pct = std::max(0.0f, selectedAgent->ancestry[i]) * 100.0f;
+                    if (pct < 0.5f) continue;
+                    const Nationality& nat = nationalities[static_cast<size_t>(i)];
+                    ImGui::TextColored(
+                        ImVec4(nat.color.r / 255.0f, nat.color.g / 255.0f, nat.color.b / 255.0f, 1.0f),
+                        "  %s: %.0f%%", nat.name.c_str(), pct);
+                }
+
                 ImGui::Text("Behavior: %s", BehaviorLabel(selectedAgent->behavior));
                 ImGui::Text("Move: %s", MoveStateLabel(selectedAgent->moveState));
                 ImGui::Text("Status: %s", DeathCauseLabel(selectedAgent->deathCause));

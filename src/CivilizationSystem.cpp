@@ -35,9 +35,54 @@ bool PathCrossesWater(const Vector3& from, const Vector3& to, float terrainBaseY
 
 }  // namespace
 
+void CivilizationSystem::SpatialBuckets::Reset(float worldHalfArg, float cellSizeArg) {
+    worldHalf = worldHalfArg;
+    cellSize = std::max(0.5f, cellSizeArg);
+    dim = std::max(1, static_cast<int>(std::ceil(worldHalf * 2.0f / cellSize)));
+    cells.assign(static_cast<size_t>(dim) * static_cast<size_t>(dim), {});
+}
+
+void CivilizationSystem::SpatialBuckets::ClearCells() {
+    for (auto& c : cells) c.clear();
+}
+
+int CivilizationSystem::SpatialBuckets::CellOf(float v) const {
+    int c = static_cast<int>((v + worldHalf) / cellSize);
+    if (c < 0) c = 0;
+    if (c >= dim) c = dim - 1;
+    return c;
+}
+
+void CivilizationSystem::SpatialBuckets::Add(int idx, float x, float z) {
+    const int gx = CellOf(x);
+    const int gz = CellOf(z);
+    cells[static_cast<size_t>(gz * dim + gx)].push_back(idx);
+}
+
 CivilizationSystem::CivilizationSystem(float terrainBaseY, int halfTiles, float tileSize)
     : terrainBaseY_(terrainBaseY), halfTiles_(halfTiles), tileSize_(tileSize) {
     worldRadius_ = static_cast<float>(halfTiles_) * tileSize_ - 0.8f;
+    const float worldHalf = static_cast<float>(halfTiles_) * tileSize_;
+    foodGrid_.Reset(worldHalf, 8.0f);
+    agentGrid_.Reset(worldHalf, 8.0f);
+}
+
+void CivilizationSystem::RebuildFoodGrid(const std::vector<FoodNode>& foodNodes) {
+    foodGrid_.ClearCells();
+    for (int i = 0; i < static_cast<int>(foodNodes.size()); ++i) {
+        const FoodNode& n = foodNodes[static_cast<size_t>(i)];
+        foodGrid_.Add(i, n.position.x, n.position.z);
+    }
+    foodGridSize_ = foodNodes.size();
+}
+
+void CivilizationSystem::RebuildAgentGrid() {
+    agentGrid_.ClearCells();
+    for (int i = 0; i < static_cast<int>(agents_.size()); ++i) {
+        const Agent& a = agents_[static_cast<size_t>(i)];
+        if (!a.alive) continue;
+        agentGrid_.Add(i, a.position.x, a.position.z);
+    }
 }
 
 void CivilizationSystem::InitializePopulation(int initialCount, const AnimationClip& idleClip, const AnimationClip& walkClip, const AnimationClip& runClip) {
@@ -64,6 +109,11 @@ void CivilizationSystem::Update(float dt, std::vector<FoodNode>& foodNodes, cons
     stats_.drinkingAgents = 0;
     stats_.matingSeekers = 0;
 
+    if (foodGridSize_ != foodNodes.size()) {
+        RebuildFoodGrid(foodNodes);
+    }
+    RebuildAgentGrid();
+
     for (Agent& agent : agents_) {
         if (!agent.alive) continue;
         UpdateAgentContinuous(agent, dt, foodNodes, idleClip, walkClip, runClip);
@@ -73,6 +123,18 @@ void CivilizationSystem::Update(float dt, std::vector<FoodNode>& foodNodes, cons
     while (simAccumulator_ >= simStepSeconds_) {
         SimStep();
         simAccumulator_ -= simStepSeconds_;
+    }
+}
+
+void CivilizationSystem::SetNationalities(const std::vector<Nationality>& nationalities) {
+    nationalities_ = nationalities;
+    for (Agent& a : agents_) {
+        if (!a.alive) continue;
+        a.nationalityId = NationalityIdAt(a.position.x, a.position.z, nationalities_, terrainBaseY_);
+        for (int i = 0; i < 4; ++i) a.ancestry[i] = 0.0f;
+        if (a.nationalityId >= 0 && a.nationalityId < 4) {
+            a.ancestry[a.nationalityId] = 1.0f;
+        }
     }
 }
 
@@ -139,6 +201,13 @@ Agent CivilizationSystem::CreateRandomAgent(int generation) {
     agent.yaw = static_cast<float>(GetRandomValue(0, 360)) * DEG2RAD;
     agent.directionChangeInterval = RandomFloat(1.8f, 4.5f);
 
+    if (!nationalities_.empty()) {
+        agent.nationalityId = NationalityIdAt(agent.position.x, agent.position.z, nationalities_, terrainBaseY_);
+        if (agent.nationalityId >= 0 && agent.nationalityId < 4) {
+            agent.ancestry[agent.nationalityId] = 1.0f;
+        }
+    }
+
     return agent;
 }
 
@@ -181,21 +250,53 @@ Agent CivilizationSystem::CreateChild(const Agent& a, const Agent& b) {
 
     child.yaw = RandomFloat(0.0f, 2.0f * PI);
 
+    // Ancestry inherited 50/50 from parents.
+    float sum = 0.0f;
+    for (int i = 0; i < 4; ++i) {
+        child.ancestry[i] = (a.ancestry[i] + b.ancestry[i]) * 0.5f;
+        sum += child.ancestry[i];
+    }
+    if (sum > 0.0001f) {
+        for (int i = 0; i < 4; ++i) child.ancestry[i] /= sum;
+        int dominant = 0;
+        for (int i = 1; i < 4; ++i) {
+            if (child.ancestry[i] > child.ancestry[dominant]) dominant = i;
+        }
+        child.nationalityId = dominant;
+    } else if (!nationalities_.empty()) {
+        child.nationalityId = (a.nationalityId >= 0) ? a.nationalityId : b.nationalityId;
+        if (child.nationalityId >= 0 && child.nationalityId < 4) {
+            child.ancestry[child.nationalityId] = 1.0f;
+        }
+    }
+
     return child;
 }
 
 int CivilizationSystem::FindNearestFood(const Agent& agent, const std::vector<FoodNode>& foodNodes, float radius) const {
     int best = -1;
     float bestD = radius;
-    for (int i = 0; i < static_cast<int>(foodNodes.size()); ++i) {
-        const FoodNode& node = foodNodes[static_cast<size_t>(i)];
-        if (node.kind == FoodKind::Water) continue;
-        if (node.amount < 0.05f) continue;
-        const float d = DistXZ(agent.position, node.position);
-        if (d >= bestD) continue;
-        if (PathCrossesWater(agent.position, node.position, terrainBaseY_)) continue;
-        bestD = d;
-        best = i;
+    const int gx0 = foodGrid_.CellOf(agent.position.x);
+    const int gz0 = foodGrid_.CellOf(agent.position.z);
+    const int radCells = static_cast<int>(std::ceil(radius / foodGrid_.cellSize));
+    for (int dz = -radCells; dz <= radCells; ++dz) {
+        const int cz = gz0 + dz;
+        if (cz < 0 || cz >= foodGrid_.dim) continue;
+        for (int dx = -radCells; dx <= radCells; ++dx) {
+            const int cx = gx0 + dx;
+            if (cx < 0 || cx >= foodGrid_.dim) continue;
+            const auto& bucket = foodGrid_.cells[static_cast<size_t>(cz * foodGrid_.dim + cx)];
+            for (int i : bucket) {
+                const FoodNode& node = foodNodes[static_cast<size_t>(i)];
+                if (node.kind == FoodKind::Water) continue;
+                if (node.amount < 0.05f) continue;
+                const float d = DistXZ(agent.position, node.position);
+                if (d >= bestD) continue;
+                if (PathCrossesWater(agent.position, node.position, terrainBaseY_)) continue;
+                bestD = d;
+                best = i;
+            }
+        }
     }
     return best;
 }
@@ -203,13 +304,25 @@ int CivilizationSystem::FindNearestFood(const Agent& agent, const std::vector<Fo
 int CivilizationSystem::FindNearestWater(const Agent& agent, const std::vector<FoodNode>& foodNodes, float radius) const {
     int best = -1;
     float bestD = radius;
-    for (int i = 0; i < static_cast<int>(foodNodes.size()); ++i) {
-        const FoodNode& node = foodNodes[static_cast<size_t>(i)];
-        if (node.kind != FoodKind::Water) continue;
-        const float d = DistXZ(agent.position, node.position);
-        if (d < bestD) {
-            bestD = d;
-            best = i;
+    const int gx0 = foodGrid_.CellOf(agent.position.x);
+    const int gz0 = foodGrid_.CellOf(agent.position.z);
+    const int radCells = static_cast<int>(std::ceil(radius / foodGrid_.cellSize));
+    for (int dz = -radCells; dz <= radCells; ++dz) {
+        const int cz = gz0 + dz;
+        if (cz < 0 || cz >= foodGrid_.dim) continue;
+        for (int dx = -radCells; dx <= radCells; ++dx) {
+            const int cx = gx0 + dx;
+            if (cx < 0 || cx >= foodGrid_.dim) continue;
+            const auto& bucket = foodGrid_.cells[static_cast<size_t>(cz * foodGrid_.dim + cx)];
+            for (int i : bucket) {
+                const FoodNode& node = foodNodes[static_cast<size_t>(i)];
+                if (node.kind != FoodKind::Water) continue;
+                const float d = DistXZ(agent.position, node.position);
+                if (d < bestD) {
+                    bestD = d;
+                    best = i;
+                }
+            }
         }
     }
     return best;
@@ -225,19 +338,32 @@ int CivilizationSystem::FindAgentIndexById(int id) const {
 int CivilizationSystem::FindNearestMate(const Agent& agent, float radius) const {
     int bestId = -1;
     float bestD = radius;
-    for (const Agent& other : agents_) {
-        if (!other.alive) continue;
-        if (other.id == agent.id) continue;
-        if (other.sex == agent.sex) continue;
-        const bool mature = other.age > 8.0f && other.age < other.maxAge * 0.84f;
-        if (!mature) continue;
-        if (other.fertilityCooldown > 0.0f) continue;
-        if (other.energy < 0.5f || other.hydration < 0.4f) continue;
-        const float d = DistXZ(agent.position, other.position);
-        if (d >= bestD) continue;
-        if (PathCrossesWater(agent.position, other.position, terrainBaseY_)) continue;
-        bestD = d;
-        bestId = other.id;
+    const int gx0 = agentGrid_.CellOf(agent.position.x);
+    const int gz0 = agentGrid_.CellOf(agent.position.z);
+    const int radCells = static_cast<int>(std::ceil(radius / agentGrid_.cellSize));
+    for (int dz = -radCells; dz <= radCells; ++dz) {
+        const int cz = gz0 + dz;
+        if (cz < 0 || cz >= agentGrid_.dim) continue;
+        for (int dx = -radCells; dx <= radCells; ++dx) {
+            const int cx = gx0 + dx;
+            if (cx < 0 || cx >= agentGrid_.dim) continue;
+            const auto& bucket = agentGrid_.cells[static_cast<size_t>(cz * agentGrid_.dim + cx)];
+            for (int i : bucket) {
+                const Agent& other = agents_[static_cast<size_t>(i)];
+                if (!other.alive) continue;
+                if (other.id == agent.id) continue;
+                if (other.sex == agent.sex) continue;
+                const bool mature = other.age > 8.0f && other.age < other.maxAge * 0.84f;
+                if (!mature) continue;
+                if (other.fertilityCooldown > 0.0f) continue;
+                if (other.energy < 0.5f || other.hydration < 0.4f) continue;
+                const float d = DistXZ(agent.position, other.position);
+                if (d >= bestD) continue;
+                if (PathCrossesWater(agent.position, other.position, terrainBaseY_)) continue;
+                bestD = d;
+                bestId = other.id;
+            }
+        }
     }
     return bestId;
 }
@@ -271,6 +397,12 @@ void CivilizationSystem::UpdateAgentContinuous(
             agent.targetFoodIndex = -1;
             agent.targetWaterIndex = -1;
         }
+    } else if (agent.behavior == Behavior::Migrate) {
+        // Hold migration unless desperate or arrived.
+        if (agent.energy < 0.22f || agent.hydration < 0.22f) {
+            agent.behavior = (agent.energy < agent.hydration) ? Behavior::SeekFood : Behavior::SeekWater;
+            agent.isSwimming = false;
+        }
     } else {
         // Priority ladder.
         if (agent.hydration < thirstCritical) {
@@ -285,6 +417,25 @@ void CivilizationSystem::UpdateAgentContinuous(
             agent.behavior = Behavior::SeekWater;
         } else {
             agent.behavior = Behavior::Wander;
+        }
+
+        // Colonization trigger: very healthy mature agent with no nearby fertile mate
+        // occasionally embarks on migration to another nation seed.
+        if (agent.behavior == Behavior::Wander && mature && nationalities_.size() > 1 &&
+            agent.energy > 0.82f && agent.hydration > 0.72f && agent.behaviorTimer > 3.0f) {
+            const int mateProbe = FindNearestMate(agent, visionRadius);
+            if (mateProbe < 0 && RandomFloat(0.0f, 1.0f) < 0.012f) {
+                int targetNat = GetRandomValue(0, static_cast<int>(nationalities_.size()) - 1);
+                int guard = 0;
+                while (targetNat == agent.nationalityId && guard++ < 6) {
+                    targetNat = GetRandomValue(0, static_cast<int>(nationalities_.size()) - 1);
+                }
+                agent.migrateTarget = nationalities_[static_cast<size_t>(targetNat)].seed;
+                agent.migrateTarget.x += RandomFloat(-4.0f, 4.0f);
+                agent.migrateTarget.z += RandomFloat(-4.0f, 4.0f);
+                agent.behavior = Behavior::Migrate;
+                agent.behaviorTimer = 0.0f;
+            }
         }
     }
 
@@ -412,6 +563,32 @@ void CivilizationSystem::UpdateAgentContinuous(
             }
             break;
         }
+        case Behavior::Migrate: {
+            const Vector3 toTarget = {
+                agent.migrateTarget.x - agent.position.x,
+                0.0f,
+                agent.migrateTarget.z - agent.position.z
+            };
+            const float d = std::sqrt(toTarget.x * toTarget.x + toTarget.z * toTarget.z);
+            if (d < 4.5f) {
+                // Arrived at new shore.
+                agent.behavior = Behavior::Wander;
+                agent.behaviorTimer = 0.0f;
+                agent.isSwimming = false;
+                agent.velocity = {0.0f, 0.0f, 0.0f};
+                agent.moveState = MoveState::Idle;
+                break;
+            }
+            agent.yaw = std::atan2(toTarget.z, toTarget.x);
+            const bool inWater = IsWaterAt(agent.position.x, agent.position.z, terrainBaseY_);
+            agent.isSwimming = inWater;
+            const float baseSpeed = 2.6f * agent.genome.moveSpeed;
+            const float speed = inWater ? baseSpeed * 0.55f : baseSpeed;
+            agent.velocity = {std::cos(agent.yaw) * speed, 0.0f, std::sin(agent.yaw) * speed};
+            agent.moveState = inWater ? MoveState::Walk : MoveState::Run;
+            stats_.matingSeekers += 1;  // reuse counter for travelers; cheap.
+            break;
+        }
         case Behavior::Wander:
         case Behavior::Rest:
         default: {
@@ -444,8 +621,9 @@ void CivilizationSystem::UpdateAgentContinuous(
     agent.position.x = Clamp(agent.position.x, -worldRadius_, worldRadius_);
     agent.position.z = Clamp(agent.position.z, -worldRadius_, worldRadius_);
 
-    // Avoid wading deep into water unless drinking.
-    if (agent.behavior != Behavior::Drink && agent.behavior != Behavior::SeekWater) {
+    // Avoid wading deep into water unless drinking or migrating.
+    if (agent.behavior != Behavior::Drink && agent.behavior != Behavior::SeekWater &&
+        agent.behavior != Behavior::Migrate) {
         if (IsWaterAt(agent.position.x, agent.position.z, terrainBaseY_)) {
             // Walk back along incoming velocity until we leave water (max ~1.5 units).
             const float vx = agent.velocity.x;

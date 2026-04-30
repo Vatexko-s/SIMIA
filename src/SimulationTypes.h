@@ -30,7 +30,8 @@ enum class Behavior {
     SeekWater,
     Drink,
     SeekMate,
-    Rest
+    Rest,
+    Migrate
 };
 
 struct Genome {
@@ -70,6 +71,10 @@ struct Agent {
     float behaviorTimer = 0.0f;
 
     int childrenBorn = 0;
+    int nationalityId = -1;
+    float ancestry[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    Vector3 migrateTarget = {0.0f, 0.0f, 0.0f};
+    bool isSwimming = false;
 
     const AnimationClip* activeClip = nullptr;
     float animTime = 0.0f;

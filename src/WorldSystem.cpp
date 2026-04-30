@@ -5,9 +5,32 @@
 
 #include "raymath.h"
 
+namespace {
+float gTerrainOffsetX = 0.0f;
+float gTerrainOffsetZ = 0.0f;
+float gTerrainPhaseA = 0.0f;
+float gTerrainPhaseB = 0.0f;
+float gTerrainFreqJitter = 1.0f;
+}
+
+void SetTerrainSeed(unsigned int seed) {
+    SetRandomSeed(seed ^ 0xDEFACE00u);
+    gTerrainOffsetX = static_cast<float>(GetRandomValue(-100000, 100000)) * 0.01f;
+    gTerrainOffsetZ = static_cast<float>(GetRandomValue(-100000, 100000)) * 0.01f;
+    gTerrainPhaseA = static_cast<float>(GetRandomValue(0, 6283)) * 0.001f;
+    gTerrainPhaseB = static_cast<float>(GetRandomValue(0, 6283)) * 0.001f;
+    gTerrainFreqJitter = 0.85f + static_cast<float>(GetRandomValue(0, 1000)) * 0.0003f;
+}
+
 float TerrainHeight(float x, float z, float terrainBaseY) {
-    const float waves = std::sin(x * 0.22f) * 0.45f + std::cos(z * 0.19f) * 0.35f;
-    const float details = std::sin((x + z) * 0.32f) * 0.22f + std::cos((x - z) * 0.27f) * 0.14f;
+    const float xx = x + gTerrainOffsetX;
+    const float zz = z + gTerrainOffsetZ;
+    const float fA = 0.22f * gTerrainFreqJitter;
+    const float fB = 0.19f * gTerrainFreqJitter;
+    const float fC = 0.32f * gTerrainFreqJitter;
+    const float fD = 0.27f * gTerrainFreqJitter;
+    const float waves = std::sin(xx * fA + gTerrainPhaseA) * 0.45f + std::cos(zz * fB + gTerrainPhaseB) * 0.35f;
+    const float details = std::sin((xx + zz) * fC + gTerrainPhaseB) * 0.22f + std::cos((xx - zz) * fD + gTerrainPhaseA) * 0.14f;
     return terrainBaseY + waves + details;
 }
 
@@ -25,7 +48,7 @@ Color LerpColor(Color a, Color b, float t) {
     };
 }
 
-void DrawWorldTile(float x, float z, float size, float terrainBaseY) {
+void DrawWorldTile(float x, float z, float size, float terrainBaseY, Color nationalityTint) {
     const float h = TerrainHeight(x, z, terrainBaseY);
     const float waterLevel = -0.38f;
     const float pathBlend = std::exp(-std::fabs(x - z * 0.25f) * 0.19f);
@@ -40,6 +63,10 @@ void DrawWorldTile(float x, float z, float size, float terrainBaseY) {
     top = LerpColor(top, dirt, pathBlend * 0.55f);
     if (h <= waterLevel) top = LerpColor(water, top, 0.15f);
 
+    if (nationalityTint.a > 0 && h > waterLevel) {
+        top = LerpColor(top, nationalityTint, 0.18f);
+    }
+
     const float thickness = h - terrainBaseY + 0.35f;
     const Vector3 tilePos = {x, terrainBaseY + thickness * 0.5f, z};
     DrawCubeV(tilePos, {size, thickness, size}, top);
@@ -47,6 +74,63 @@ void DrawWorldTile(float x, float z, float size, float terrainBaseY) {
     if (h <= waterLevel + 0.03f) {
         DrawCubeV({x, waterLevel + 0.02f, z}, {size * 0.94f, 0.04f, size * 0.94f}, Fade(Color{95, 182, 220, 255}, 0.85f));
     }
+}
+
+std::vector<Nationality> BuildNationalities(int halfTiles, float tileSize, float terrainBaseY, unsigned int seed) {
+    SetRandomSeed(seed ^ 0xCAFEBABEu);
+
+    const Color colors[4] = {
+        Color{120, 170, 255, 255},   // Azura - blue
+        Color{255, 230, 120, 255},   // Solana - yellow
+        Color{255, 165, 90, 255},    // Embra - orange
+        Color{130, 220, 140, 255},   // Verdia - green
+    };
+    const char* names[4] = {"Azura", "Solana", "Embra", "Verdia"};
+
+    std::vector<Nationality> nations;
+    nations.reserve(4);
+
+    for (int i = 0; i < 4; ++i) {
+        Nationality n;
+        n.name = names[i];
+        n.color = colors[i];
+
+        Vector3 pos = {0.0f, 0.0f, 0.0f};
+        int attempts = 0;
+        const int range = halfTiles - 5;
+        do {
+            pos.x = static_cast<float>(GetRandomValue(-range, range)) * tileSize;
+            pos.z = static_cast<float>(GetRandomValue(-range, range)) * tileSize;
+            ++attempts;
+        } while (IsWaterAt(pos.x, pos.z, terrainBaseY) && attempts < 400);
+        pos.y = TerrainHeight(pos.x, pos.z, terrainBaseY);
+
+        // Spread seeds across quadrants by biasing first attempt direction.
+        const float quadAngle = (static_cast<float>(i) + 0.5f) * (2.0f * PI / 4.0f);
+        if (attempts >= 400) {
+            pos.x = std::cos(quadAngle) * static_cast<float>(range) * tileSize * 0.6f;
+            pos.z = std::sin(quadAngle) * static_cast<float>(range) * tileSize * 0.6f;
+            pos.y = TerrainHeight(pos.x, pos.z, terrainBaseY);
+        }
+
+        n.seed = pos;
+        nations.push_back(n);
+    }
+
+    return nations;
+}
+
+int NationalityIdAt(float x, float z, const std::vector<Nationality>& nations, float terrainBaseY) {
+    if (IsWaterAt(x, z, terrainBaseY)) return -1;
+    int best = -1;
+    float bestD = 1e18f;
+    for (int i = 0; i < static_cast<int>(nations.size()); ++i) {
+        const float dx = nations[i].seed.x - x;
+        const float dz = nations[i].seed.z - z;
+        const float d = dx * dx + dz * dz;
+        if (d < bestD) { bestD = d; best = i; }
+    }
+    return best;
 }
 
 std::vector<WorldProp> BuildProps(int halfTiles, float tileSize, float terrainBaseY, unsigned int seed) {
