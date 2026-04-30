@@ -23,11 +23,23 @@ enum class DeathCause {
     Starvation
 };
 
+enum class Behavior {
+    Wander,
+    SeekFood,
+    Eat,
+    SeekWater,
+    Drink,
+    SeekMate,
+    Rest
+};
+
 struct Genome {
     float moveSpeed = 1.0f;   // Multiplier for base movement speed.
     float metabolism = 1.0f;  // Higher means faster energy drain.
     float fertility = 1.0f;   // Higher means better reproduction chance.
     float longevity = 1.0f;   // Higher means older max age.
+    float vision = 1.0f;      // Search radius for food/water.
+    float strength = 1.0f;    // Eating/drinking efficiency.
 };
 
 struct Agent {
@@ -40,6 +52,7 @@ struct Agent {
     float age = 0.0f;
     float maxAge = 80.0f;
     float energy = 1.0f;
+    float hydration = 1.0f;
     float fertilityCooldown = 0.0f;
 
     Genome genome;
@@ -50,6 +63,13 @@ struct Agent {
     float moveTimer = 0.0f;
     float directionChangeInterval = 3.0f;
     MoveState moveState = MoveState::Idle;
+    Behavior behavior = Behavior::Wander;
+    int targetFoodIndex = -1;
+    int targetWaterIndex = -1;
+    int targetMateId = -1;
+    float behaviorTimer = 0.0f;
+
+    int childrenBorn = 0;
 
     const AnimationClip* activeClip = nullptr;
     float animTime = 0.0f;
@@ -77,5 +97,12 @@ struct CivilizationStats {
     int reproductionChecks = 0;
     int reproductionSuccesses = 0;
     float populationPressure = 0.0f;
-};
 
+    // Resource diagnostics.
+    int foragingAgents = 0;
+    int eatingAgents = 0;
+    int drinkingAgents = 0;
+    int matingSeekers = 0;
+    int starvationDeaths = 0;
+    int ageDeaths = 0;
+};

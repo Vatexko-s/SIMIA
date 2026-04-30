@@ -1,5 +1,6 @@
 #include "WorldSystem.h"
 
+#include <algorithm>
 #include <cmath>
 
 #include "raymath.h"
@@ -8,6 +9,10 @@ float TerrainHeight(float x, float z, float terrainBaseY) {
     const float waves = std::sin(x * 0.22f) * 0.45f + std::cos(z * 0.19f) * 0.35f;
     const float details = std::sin((x + z) * 0.32f) * 0.22f + std::cos((x - z) * 0.27f) * 0.14f;
     return terrainBaseY + waves + details;
+}
+
+bool IsWaterAt(float x, float z, float terrainBaseY) {
+    return TerrainHeight(x, z, terrainBaseY) <= -0.38f;
 }
 
 Color LerpColor(Color a, Color b, float t) {
@@ -38,30 +43,33 @@ void DrawWorldTile(float x, float z, float size, float terrainBaseY) {
     const float thickness = h - terrainBaseY + 0.35f;
     const Vector3 tilePos = {x, terrainBaseY + thickness * 0.5f, z};
     DrawCubeV(tilePos, {size, thickness, size}, top);
-    DrawCubeWiresV(tilePos, {size, thickness, size}, Fade(BLACK, 0.12f));
 
     if (h <= waterLevel + 0.03f) {
         DrawCubeV({x, waterLevel + 0.02f, z}, {size * 0.94f, 0.04f, size * 0.94f}, Fade(Color{95, 182, 220, 255}, 0.85f));
     }
 }
 
-std::vector<WorldProp> BuildProps(int halfTiles, float tileSize, float terrainBaseY) {
+std::vector<WorldProp> BuildProps(int halfTiles, float tileSize, float terrainBaseY, unsigned int seed) {
     std::vector<WorldProp> props;
-    props.reserve(150);
 
-    SetRandomSeed(1337);
-    for (int i = 0; i < 150; ++i) {
+    // Density scales with world area; tree-heavy ratio.
+    const int target = static_cast<int>(halfTiles * halfTiles * 0.55f);
+    props.reserve(target);
+
+    SetRandomSeed(seed);
+    for (int i = 0; i < target; ++i) {
         const float x = static_cast<float>(GetRandomValue(-halfTiles + 1, halfTiles - 1)) * tileSize +
-                        static_cast<float>(GetRandomValue(-35, 35)) * 0.01f;
+                        static_cast<float>(GetRandomValue(-45, 45)) * 0.01f;
         const float z = static_cast<float>(GetRandomValue(-halfTiles + 1, halfTiles - 1)) * tileSize +
-                        static_cast<float>(GetRandomValue(-35, 35)) * 0.01f;
+                        static_cast<float>(GetRandomValue(-45, 45)) * 0.01f;
 
-        if (std::fabs(x - z * 0.25f) < 2.0f) continue;
+        if (std::fabs(x - z * 0.25f) < 1.4f) continue;
         if (TerrainHeight(x, z, terrainBaseY) < -0.25f) continue;
 
-        const bool tree = GetRandomValue(0, 100) > 35;
-        const float scale = tree ? static_cast<float>(GetRandomValue(85, 135)) * 0.01f
-                                 : static_cast<float>(GetRandomValue(55, 110)) * 0.01f;
+        // 80 % trees so forests dominate.
+        const bool tree = GetRandomValue(0, 100) > 20;
+        const float scale = tree ? static_cast<float>(GetRandomValue(80, 150)) * 0.01f
+                                 : static_cast<float>(GetRandomValue(45, 110)) * 0.01f;
         props.push_back({{x, TerrainHeight(x, z, terrainBaseY), z}, scale, tree});
     }
 
@@ -83,3 +91,106 @@ void DrawProp(const WorldProp& prop) {
     }
 }
 
+std::vector<FoodNode> BuildFoodNodes(int halfTiles, float tileSize, float terrainBaseY, unsigned int seed) {
+    std::vector<FoodNode> nodes;
+    const int berryTarget = static_cast<int>(halfTiles * halfTiles * 0.18f);
+    const int treeTarget = static_cast<int>(halfTiles * halfTiles * 0.06f);
+    nodes.reserve(berryTarget + treeTarget + 100);
+
+    SetRandomSeed(seed ^ 0x9E3779B9u);
+
+    // Berry bushes scattered across grass.
+    for (int i = 0; i < berryTarget; ++i) {
+        const float x = static_cast<float>(GetRandomValue(-halfTiles + 2, halfTiles - 2)) * tileSize +
+                        static_cast<float>(GetRandomValue(-40, 40)) * 0.01f;
+        const float z = static_cast<float>(GetRandomValue(-halfTiles + 2, halfTiles - 2)) * tileSize +
+                        static_cast<float>(GetRandomValue(-40, 40)) * 0.01f;
+        if (TerrainHeight(x, z, terrainBaseY) < -0.20f) continue;
+        if (std::fabs(x - z * 0.25f) < 1.5f) continue;
+
+        FoodNode node;
+        node.kind = FoodKind::BerryBush;
+        node.position = {x, TerrainHeight(x, z, terrainBaseY), z};
+        node.maxAmount = static_cast<float>(GetRandomValue(60, 120)) * 0.01f;
+        node.amount = node.maxAmount;
+        node.regrowRate = static_cast<float>(GetRandomValue(2, 6)) * 0.01f;
+        nodes.push_back(node);
+    }
+
+    // Fruit trees - bigger, slower regrow.
+    for (int i = 0; i < treeTarget; ++i) {
+        const float x = static_cast<float>(GetRandomValue(-halfTiles + 3, halfTiles - 3)) * tileSize +
+                        static_cast<float>(GetRandomValue(-30, 30)) * 0.01f;
+        const float z = static_cast<float>(GetRandomValue(-halfTiles + 3, halfTiles - 3)) * tileSize +
+                        static_cast<float>(GetRandomValue(-30, 30)) * 0.01f;
+        if (TerrainHeight(x, z, terrainBaseY) < -0.10f) continue;
+
+        FoodNode node;
+        node.kind = FoodKind::FruitTree;
+        node.position = {x, TerrainHeight(x, z, terrainBaseY), z};
+        node.maxAmount = static_cast<float>(GetRandomValue(140, 220)) * 0.01f;
+        node.amount = node.maxAmount;
+        node.regrowRate = static_cast<float>(GetRandomValue(1, 3)) * 0.01f;
+        nodes.push_back(node);
+    }
+
+    // Water nodes at lake/sea cells - infinite refill.
+    for (int x = -halfTiles; x <= halfTiles; x += 6) {
+        for (int z = -halfTiles; z <= halfTiles; z += 6) {
+            const float wx = static_cast<float>(x) * tileSize;
+            const float wz = static_cast<float>(z) * tileSize;
+            if (!IsWaterAt(wx, wz, terrainBaseY)) continue;
+
+            FoodNode node;
+            node.kind = FoodKind::Water;
+            node.position = {wx, -0.36f, wz};
+            node.maxAmount = 999.0f;
+            node.amount = 999.0f;
+            node.regrowRate = 0.0f;
+            nodes.push_back(node);
+        }
+    }
+
+    return nodes;
+}
+
+void UpdateFoodNodes(std::vector<FoodNode>& nodes, float dt) {
+    for (FoodNode& node : nodes) {
+        if (node.kind == FoodKind::Water) continue;
+        if (node.amount < node.maxAmount) {
+            node.amount = std::min(node.maxAmount, node.amount + node.regrowRate * dt);
+        }
+    }
+}
+
+void DrawFoodNode(const FoodNode& node) {
+    const float fill = (node.maxAmount > 0.0f) ? Clamp(node.amount / node.maxAmount, 0.0f, 1.0f) : 0.0f;
+
+    if (node.kind == FoodKind::BerryBush) {
+        const float bushScale = 0.45f;
+        DrawSphere({node.position.x, node.position.y + 0.20f, node.position.z}, bushScale,
+                   Color{60, 110, 70, 255});
+        // Berry clusters fade out as bush is depleted.
+        const Color berry = Fade(Color{210, 60, 90, 255}, 0.55f + 0.45f * fill);
+        DrawSphere({node.position.x + 0.18f, node.position.y + 0.32f, node.position.z + 0.05f}, 0.07f * (0.5f + fill * 0.7f), berry);
+        DrawSphere({node.position.x - 0.16f, node.position.y + 0.36f, node.position.z + 0.10f}, 0.06f * (0.5f + fill * 0.7f), berry);
+        DrawSphere({node.position.x + 0.05f, node.position.y + 0.40f, node.position.z - 0.18f}, 0.07f * (0.5f + fill * 0.7f), berry);
+        DrawSphere({node.position.x - 0.09f, node.position.y + 0.30f, node.position.z - 0.14f}, 0.05f * (0.5f + fill * 0.7f), berry);
+    } else if (node.kind == FoodKind::FruitTree) {
+        const float trunkH = 1.4f;
+        DrawCylinder({node.position.x, node.position.y + trunkH * 0.5f, node.position.z}, 0.16f, 0.16f, trunkH, 8,
+                     Color{96, 70, 48, 255});
+        DrawSphere({node.position.x, node.position.y + trunkH + 0.45f, node.position.z}, 0.85f, Color{72, 132, 78, 255});
+        // Fruits.
+        const Color fruit = Fade(Color{235, 165, 55, 255}, 0.4f + 0.6f * fill);
+        const float r = 0.10f * (0.5f + fill * 0.7f);
+        DrawSphere({node.position.x + 0.40f, node.position.y + trunkH + 0.30f, node.position.z + 0.20f}, r, fruit);
+        DrawSphere({node.position.x - 0.35f, node.position.y + trunkH + 0.45f, node.position.z + 0.10f}, r, fruit);
+        DrawSphere({node.position.x + 0.10f, node.position.y + trunkH + 0.65f, node.position.z - 0.30f}, r, fruit);
+        DrawSphere({node.position.x - 0.20f, node.position.y + trunkH + 0.20f, node.position.z - 0.30f}, r, fruit);
+    } else {
+        // Water marker - small ripple disc to indicate drinkable spot.
+        DrawCylinder({node.position.x, node.position.y + 0.03f, node.position.z}, 0.55f, 0.55f, 0.02f, 16,
+                     Fade(Color{120, 200, 240, 255}, 0.55f));
+    }
+}
